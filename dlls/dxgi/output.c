@@ -363,14 +363,37 @@ static HRESULT STDMETHODCALLTYPE dxgi_output_FindClosestMatchingMode(IDXGIOutput
 
 static HRESULT STDMETHODCALLTYPE dxgi_output_WaitForVBlank(IDXGIOutput6 *iface)
 {
+    struct dxgi_output *output = impl_from_IDXGIOutput6(iface);
+    LARGE_INTEGER counter, frequency;
+    struct wined3d_display_mode mode;
+    LONGLONG ticks_per_frame, remaining;
     static BOOL once = FALSE;
+    HRESULT hr;
 
     if (!once++)
-        FIXME("iface %p stub!\n", iface);
+        FIXME("iface %p semi-stub!\n", iface);
     else
-        TRACE("iface %p stub!\n", iface);
+        TRACE("iface %p semi-stub!\n", iface);
 
-    return E_NOTIMPL;
+    /* There's no real vertical blank to wait for, so wait for the next frame boundary at the
+     * display's refresh rate, on the same QueryPerformanceCounter timeline that
+     * wined3d_output_get_raster_status() fakes. Applications such as JUCE 8 drive their
+     * repainting from this call and never draw when it fails. */
+    wined3d_mutex_lock();
+    hr = wined3d_output_get_display_mode(output->wined3d_output, &mode, NULL);
+    wined3d_mutex_unlock();
+    if (FAILED(hr))
+        return hr;
+    if (!mode.refresh_rate)
+        mode.refresh_rate = 60;
+
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&counter);
+    ticks_per_frame = frequency.QuadPart / mode.refresh_rate;
+    remaining = ticks_per_frame - counter.QuadPart % ticks_per_frame;
+    Sleep((remaining * 1000 + frequency.QuadPart - 1) / frequency.QuadPart);
+
+    return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE dxgi_output_TakeOwnership(IDXGIOutput6 *iface, IUnknown *device, BOOL exclusive)

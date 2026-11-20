@@ -5960,6 +5960,52 @@ static void test_maximum_frame_latency(void)
     ok(!refcount, "Device has %lu references left.\n", refcount);
 }
 
+static void test_output_wait_for_vblank(void)
+{
+    LARGE_INTEGER frequency, start, end;
+    IDXGIAdapter *adapter;
+    IDXGIOutput *output;
+    IDXGIDevice *device;
+    unsigned int i;
+    ULONG refcount;
+    HRESULT hr;
+
+    if (!(device = create_device(0)))
+    {
+        skip("Failed to create device.\n");
+        return;
+    }
+
+    hr = IDXGIDevice_GetAdapter(device, &adapter);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    hr = IDXGIAdapter_EnumOutputs(adapter, 0, &output);
+    if (hr == DXGI_ERROR_NOT_FOUND)
+    {
+        skip("Adapter doesn't have any outputs.\n");
+        IDXGIAdapter_Release(adapter);
+        IDXGIDevice_Release(device);
+        return;
+    }
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    QueryPerformanceFrequency(&frequency);
+    for (i = 0; i < 5; ++i)
+    {
+        QueryPerformanceCounter(&start);
+        hr = IDXGIOutput_WaitForVBlank(output);
+        QueryPerformanceCounter(&end);
+        ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+        /* A frame at any real refresh rate is well under a second. */
+        ok(end.QuadPart - start.QuadPart < frequency.QuadPart,
+                "WaitForVBlank() took %I64d ms.\n", (end.QuadPart - start.QuadPart) * 1000 / frequency.QuadPart);
+    }
+
+    IDXGIOutput_Release(output);
+    IDXGIAdapter_Release(adapter);
+    refcount = IDXGIDevice_Release(device);
+    ok(!refcount, "Device has %lu references left.\n", refcount);
+}
+
 static void test_output_desc(void)
 {
     IDXGIAdapter *adapter, *adapter2;
@@ -9085,6 +9131,7 @@ START_TEST(dxgi)
     queue_test(test_private_data);
     queue_test(test_maximum_frame_latency);
     queue_test(test_output_desc);
+    queue_test(test_output_wait_for_vblank);
     queue_test(test_object_wrapping);
     queue_test(test_factory_check_feature_support);
     queue_test(test_video_memory_budget_notification);
