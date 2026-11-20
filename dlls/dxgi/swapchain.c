@@ -819,6 +819,46 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_GetCoreWindow(IDXGISwapChain4 *
     return DXGI_ERROR_INVALID_CALL;
 }
 
+/* With flip model, areas outside the dirty rects keep the previously presented
+ * frame. That frame is in the last back buffer after wined3d rotates them, so
+ * update it with the dirty areas and present the result. */
+static void d3d11_swapchain_merge_dirty_rects(struct d3d11_swapchain *swapchain,
+        const DXGI_PRESENT_PARAMETERS *present_parameters)
+{
+    struct wined3d_resource *current, *previous;
+    struct wined3d_device_context *context;
+    struct wined3d_swapchain_desc desc;
+    struct wined3d_box box;
+    unsigned int i;
+    RECT rect;
+
+    wined3d_mutex_lock();
+    wined3d_swapchain_get_desc(swapchain->wined3d_swapchain, &desc);
+    if ((desc.swap_effect != WINED3D_SWAP_EFFECT_FLIP_SEQUENTIAL
+            && desc.swap_effect != WINED3D_SWAP_EFFECT_FLIP_DISCARD) || desc.backbuffer_count < 2)
+    {
+        wined3d_mutex_unlock();
+        return;
+    }
+
+    current = wined3d_texture_get_resource(wined3d_swapchain_get_back_buffer(swapchain->wined3d_swapchain, 0));
+    previous = wined3d_texture_get_resource(wined3d_swapchain_get_back_buffer(swapchain->wined3d_swapchain,
+            desc.backbuffer_count - 1));
+    context = wined3d_device_get_immediate_context(wined3d_swapchain_get_device(swapchain->wined3d_swapchain));
+
+    for (i = 0; i < present_parameters->DirtyRectsCount; ++i)
+    {
+        SetRect(&rect, 0, 0, desc.backbuffer_width, desc.backbuffer_height);
+        if (!IntersectRect(&rect, &rect, &present_parameters->pDirtyRects[i]))
+            continue;
+        wined3d_box_set(&box, rect.left, rect.top, rect.right, rect.bottom, 0, 1);
+        wined3d_device_context_copy_sub_resource_region(context, previous, 0,
+                rect.left, rect.top, 0, current, 0, &box, 0);
+    }
+    wined3d_device_context_copy_resource(context, current, previous);
+    wined3d_mutex_unlock();
+}
+
 static HRESULT STDMETHODCALLTYPE d3d11_swapchain_Present1(IDXGISwapChain4 *iface,
         UINT sync_interval, UINT flags, const DXGI_PRESENT_PARAMETERS *present_parameters)
 {
@@ -827,8 +867,10 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_Present1(IDXGISwapChain4 *iface
     TRACE("iface %p, sync_interval %u, flags %#x, present_parameters %p.\n",
             iface, sync_interval, flags, present_parameters);
 
-    if (present_parameters)
-        FIXME("Ignored present parameters %p.\n", present_parameters);
+    if (present_parameters && present_parameters->DirtyRectsCount && !(flags & DXGI_PRESENT_TEST))
+        d3d11_swapchain_merge_dirty_rects(swapchain, present_parameters);
+    if (present_parameters && present_parameters->pScrollRect)
+        FIXME("Ignoring scroll rect %s.\n", wine_dbgstr_rect(present_parameters->pScrollRect));
 
     return d3d11_swapchain_present(swapchain, sync_interval, flags);
 }
