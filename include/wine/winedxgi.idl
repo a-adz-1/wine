@@ -37,6 +37,18 @@ interface IWineDXGISwapChainFactory : IUnknown
     );
 }
 
+/* Lets dcomp attach a composition swapchain to the window of the target it's shown in. */
+[
+    object,
+    local,
+    uuid(c420c5d5-5be3-4357-aafe-76fd2bcc1bca)
+]
+interface IWineDXGISwapChain : IUnknown
+{
+    HRESULT set_composition_window([in] HWND helper_window);
+    HRESULT set_target_window([in] HWND window);
+}
+
 [
     object,
     local,

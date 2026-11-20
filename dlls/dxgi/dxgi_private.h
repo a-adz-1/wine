@@ -175,6 +175,7 @@ struct dxgi_adapter *unsafe_impl_from_IDXGIAdapter(IDXGIAdapter *iface);
 struct d3d11_swapchain
 {
     IDXGISwapChain4 IDXGISwapChain4_iface;
+    IWineDXGISwapChain IWineDXGISwapChain_iface;
     LONG refcount;
     struct wined3d_private_store private_store;
     struct wined3d_swapchain *wined3d_swapchain;
@@ -186,6 +187,10 @@ struct d3d11_swapchain
     IDXGIOutput *target;
     LONG present_count;
     LONG in_set_fullscreen_state;
+    /* Hidden window a composition swapchain presents to until dcomp gives it a target. */
+    HWND composition_window;
+    /* The window of the dcomp target this composition swapchain was last committed to. */
+    HWND composition_target;
 };
 
 HRESULT d3d11_swapchain_init(struct d3d11_swapchain *swapchain, struct dxgi_device *device,

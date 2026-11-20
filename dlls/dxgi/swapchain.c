@@ -227,6 +227,15 @@ static HRESULT STDMETHODCALLTYPE d3d11_swapchain_QueryInterface(IDXGISwapChain4 
         return S_OK;
     }
 
+    if (IsEqualGUID(riid, &IID_IWineDXGISwapChain))
+    {
+        struct d3d11_swapchain *swapchain = d3d11_swapchain_from_IDXGISwapChain4(iface);
+
+        IUnknown_AddRef(iface);
+        *object = &swapchain->IWineDXGISwapChain_iface;
+        return S_OK;
+    }
+
     WARN("%s not implemented, returning E_NOINTERFACE\n", debugstr_guid(riid));
 
     *object = NULL;
@@ -262,12 +271,80 @@ static ULONG STDMETHODCALLTYPE d3d11_swapchain_Release(IDXGISwapChain4 *iface)
             IDXGIOutput_Release(swapchain->target);
         }
         IWineDXGIFactory_Release(swapchain->factory);
+        /* The helper window belongs to the thread that created the swapchain, which may not be
+         * this one, so let that thread's default WM_CLOSE handling destroy it. */
+        if (swapchain->composition_window)
+            PostMessageW(swapchain->composition_window, WM_CLOSE, 0, 0);
         wined3d_swapchain_decref(swapchain->wined3d_swapchain);
         IWineDXGIDevice_Release(device);
     }
 
     return refcount;
 }
+
+/* IWineDXGISwapChain methods */
+
+static inline struct d3d11_swapchain *d3d11_swapchain_from_IWineDXGISwapChain(IWineDXGISwapChain *iface)
+{
+    return CONTAINING_RECORD(iface, struct d3d11_swapchain, IWineDXGISwapChain_iface);
+}
+
+static HRESULT STDMETHODCALLTYPE d3d11_wine_swapchain_QueryInterface(IWineDXGISwapChain *iface,
+        REFIID riid, void **object)
+{
+    struct d3d11_swapchain *swapchain = d3d11_swapchain_from_IWineDXGISwapChain(iface);
+
+    return d3d11_swapchain_QueryInterface(&swapchain->IDXGISwapChain4_iface, riid, object);
+}
+
+static ULONG STDMETHODCALLTYPE d3d11_wine_swapchain_AddRef(IWineDXGISwapChain *iface)
+{
+    struct d3d11_swapchain *swapchain = d3d11_swapchain_from_IWineDXGISwapChain(iface);
+
+    return d3d11_swapchain_AddRef(&swapchain->IDXGISwapChain4_iface);
+}
+
+static ULONG STDMETHODCALLTYPE d3d11_wine_swapchain_Release(IWineDXGISwapChain *iface)
+{
+    struct d3d11_swapchain *swapchain = d3d11_swapchain_from_IWineDXGISwapChain(iface);
+
+    return d3d11_swapchain_Release(&swapchain->IDXGISwapChain4_iface);
+}
+
+static HRESULT STDMETHODCALLTYPE d3d11_wine_swapchain_set_composition_window(IWineDXGISwapChain *iface,
+        HWND helper_window)
+{
+    struct d3d11_swapchain *swapchain = d3d11_swapchain_from_IWineDXGISwapChain(iface);
+
+    TRACE("iface %p, helper_window %p.\n", iface, helper_window);
+
+    swapchain->composition_window = helper_window;
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE d3d11_wine_swapchain_set_target_window(IWineDXGISwapChain *iface, HWND window)
+{
+    struct d3d11_swapchain *swapchain = d3d11_swapchain_from_IWineDXGISwapChain(iface);
+
+    TRACE("iface %p, window %p.\n", iface, window);
+
+    if (!swapchain->composition_window)
+        return DXGI_ERROR_INVALID_CALL;
+
+    /* Presents pass this as the destination window override; wined3d otherwise resets the
+     * swapchain to its device window (the hidden helper) on every present. */
+    InterlockedExchangePointer((void **)&swapchain->composition_target, window);
+    return S_OK;
+}
+
+static const struct IWineDXGISwapChainVtbl d3d11_wine_swapchain_vtbl =
+{
+    d3d11_wine_swapchain_QueryInterface,
+    d3d11_wine_swapchain_AddRef,
+    d3d11_wine_swapchain_Release,
+    d3d11_wine_swapchain_set_composition_window,
+    d3d11_wine_swapchain_set_target_window,
+};
 
 /* IDXGIObject methods */
 
@@ -345,7 +422,8 @@ static HRESULT d3d11_swapchain_present(struct d3d11_swapchain *swapchain,
         return S_OK;
     }
 
-    if (SUCCEEDED(hr = wined3d_swapchain_present(swapchain->wined3d_swapchain, NULL, NULL, NULL, sync_interval, 0)))
+    if (SUCCEEDED(hr = wined3d_swapchain_present(swapchain->wined3d_swapchain, NULL, NULL,
+            swapchain->composition_target, sync_interval, 0)))
         InterlockedIncrement(&swapchain->present_count);
     return hr;
 }
@@ -1062,6 +1140,7 @@ HRESULT d3d11_swapchain_init(struct d3d11_swapchain *swapchain, struct dxgi_devi
     IWineDXGIDevice_AddRef(swapchain->device = &device->IWineDXGIDevice_iface);
 
     swapchain->IDXGISwapChain4_iface.lpVtbl = &d3d11_swapchain_vtbl;
+    swapchain->IWineDXGISwapChain_iface.lpVtbl = &d3d11_wine_swapchain_vtbl;
     swapchain->state_parent.ops = &d3d11_swapchain_state_parent_ops;
     swapchain->fullscreen_desc = *fullscreen_desc;
     swapchain->refcount = 1;

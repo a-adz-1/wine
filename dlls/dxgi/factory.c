@@ -390,10 +390,43 @@ static void STDMETHODCALLTYPE dxgi_factory_UnregisterOcclusionStatus(IWineDXGIFa
 static HRESULT STDMETHODCALLTYPE dxgi_factory_CreateSwapChainForComposition(IWineDXGIFactory *iface,
         IUnknown *device, const DXGI_SWAP_CHAIN_DESC1 *desc, IDXGIOutput *output, IDXGISwapChain1 **swapchain)
 {
-    FIXME("iface %p, device %p, desc %p, output %p, swapchain %p stub!\n",
+    IWineDXGISwapChain *wine_swapchain;
+    HWND window;
+    HRESULT hr;
+
+    TRACE("iface %p, device %p, desc %p, output %p, swapchain %p.\n",
             iface, device, desc, output, swapchain);
 
-    return E_NOTIMPL;
+    if (!device || !desc || !swapchain)
+    {
+        WARN("Invalid pointer.\n");
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
+    /* Composition swapchains aren't tied to a window; dcomp shows them in one when a visual
+     * holding them is committed to a target. Until then they present to a hidden window. */
+    if (!(window = CreateWindowExW(0, L"static", L"", WS_POPUP, 0, 0,
+            max(desc->Width, 1), max(desc->Height, 1), NULL, NULL, NULL, NULL)))
+        return HRESULT_FROM_WIN32(GetLastError());
+
+    if (FAILED(hr = IWineDXGIFactory_CreateSwapChainForHwnd(iface, device, window, desc, NULL, output, swapchain)))
+    {
+        DestroyWindow(window);
+        return hr;
+    }
+
+    if (FAILED(hr = IDXGISwapChain1_QueryInterface(*swapchain, &IID_IWineDXGISwapChain, (void **)&wine_swapchain)))
+    {
+        FIXME("Composition swapchains are not supported for this device.\n");
+        IDXGISwapChain1_Release(*swapchain);
+        *swapchain = NULL;
+        DestroyWindow(window);
+        return E_NOTIMPL;
+    }
+    IWineDXGISwapChain_set_composition_window(wine_swapchain, window);
+    IWineDXGISwapChain_Release(wine_swapchain);
+
+    return S_OK;
 }
 
 static UINT STDMETHODCALLTYPE dxgi_factory_GetCreationFlags(IWineDXGIFactory *iface)
