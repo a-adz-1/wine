@@ -1830,12 +1830,15 @@ static void STDMETHODCALLTYPE d2d_device_context_GetTags(ID2D1DeviceContext6 *if
     *tag2 = render_target->drawing_state.tag2;
 }
 
+static void d2d_device_context_push_layer_clip(struct d2d_device_context *context,
+        const D2D1_RECT_F *content_bounds, ID2D1Geometry *mask, const D2D1_MATRIX_3X2_F *mask_transform);
+
 static void STDMETHODCALLTYPE d2d_device_context_PushLayer(ID2D1DeviceContext6 *iface,
         const D2D1_LAYER_PARAMETERS *layer_parameters, ID2D1Layer *layer)
 {
     struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
 
-    FIXME("iface %p, layer_parameters %p, layer %p stub!\n", iface, layer_parameters, layer);
+    FIXME("iface %p, layer_parameters %p, layer %p semi-stub!\n", iface, layer_parameters, layer);
 
     if (context->target.type == D2D_TARGET_COMMAND_LIST)
     {
@@ -1845,16 +1848,21 @@ static void STDMETHODCALLTYPE d2d_device_context_PushLayer(ID2D1DeviceContext6 *
         parameters.layerOptions = D2D1_LAYER_OPTIONS1_NONE;
         d2d_command_list_push_layer(context->target.command_list, context, &parameters);
     }
+
+    d2d_device_context_push_layer_clip(context, &layer_parameters->contentBounds,
+            layer_parameters->geometricMask, &layer_parameters->maskTransform);
 }
 
 static void STDMETHODCALLTYPE d2d_device_context_PopLayer(ID2D1DeviceContext6 *iface)
 {
     struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
 
-    FIXME("iface %p stub!\n", iface);
+    TRACE("iface %p.\n", iface);
 
     if (context->target.type == D2D_TARGET_COMMAND_LIST)
         d2d_command_list_pop_layer(context->target.command_list);
+
+    d2d_clip_stack_pop(&context->clip_stack);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_device_context_Flush(ID2D1DeviceContext6 *iface, D2D1_TAG *tag1, D2D1_TAG *tag2)
@@ -1917,21 +1925,11 @@ static void STDMETHODCALLTYPE d2d_device_context_RestoreDrawingState(ID2D1Device
     context->text_rendering_params = state_block_impl->text_rendering_params;
 }
 
-static void STDMETHODCALLTYPE d2d_device_context_PushAxisAlignedClip(ID2D1DeviceContext6 *iface,
-        const D2D1_RECT_F *clip_rect, D2D1_ANTIALIAS_MODE antialias_mode)
+static void d2d_device_context_push_clip_rect(struct d2d_device_context *context, const D2D1_RECT_F *clip_rect)
 {
-    struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
     D2D1_RECT_F transformed_rect;
     float x_scale, y_scale;
     D2D1_POINT_2F point;
-
-    TRACE("iface %p, clip_rect %s, antialias_mode %#x.\n", iface, debug_d2d_rect_f(clip_rect), antialias_mode);
-
-    if (context->target.type == D2D_TARGET_COMMAND_LIST)
-        d2d_command_list_push_clip(context->target.command_list, clip_rect, antialias_mode);
-
-    if (antialias_mode != D2D1_ANTIALIAS_MODE_ALIASED)
-        FIXME("Ignoring antialias_mode %#x.\n", antialias_mode);
 
     x_scale = context->desc.dpiX / 96.0f;
     y_scale = context->desc.dpiY / 96.0f;
@@ -1950,6 +1948,47 @@ static void STDMETHODCALLTYPE d2d_device_context_PushAxisAlignedClip(ID2D1Device
 
     if (!d2d_clip_stack_push(&context->clip_stack, &transformed_rect))
         WARN("Failed to push clip rect.\n");
+}
+
+static void STDMETHODCALLTYPE d2d_device_context_PushAxisAlignedClip(ID2D1DeviceContext6 *iface,
+        const D2D1_RECT_F *clip_rect, D2D1_ANTIALIAS_MODE antialias_mode)
+{
+    struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
+
+    TRACE("iface %p, clip_rect %s, antialias_mode %#x.\n", iface, debug_d2d_rect_f(clip_rect), antialias_mode);
+
+    if (context->target.type == D2D_TARGET_COMMAND_LIST)
+        d2d_command_list_push_clip(context->target.command_list, clip_rect, antialias_mode);
+
+    if (antialias_mode != D2D1_ANTIALIAS_MODE_ALIASED)
+        FIXME("Ignoring antialias_mode %#x.\n", antialias_mode);
+
+    d2d_device_context_push_clip_rect(context, clip_rect);
+}
+
+/* Layers are approximated by clipping to their content bounds, intersected with the bounds of
+ * their geometric mask. Opacity, opacity brushes and non-rectangular masks are ignored. Without
+ * this, content drawn into a layer (such as a background fill) covers the whole target. */
+static void d2d_device_context_push_layer_clip(struct d2d_device_context *context,
+        const D2D1_RECT_F *content_bounds, ID2D1Geometry *mask, const D2D1_MATRIX_3X2_F *mask_transform)
+{
+    static const float limit = 1.0e9f;
+    D2D1_RECT_F rect = *content_bounds, mask_bounds;
+
+    if (mask && SUCCEEDED(ID2D1Geometry_GetBounds(mask, mask_transform, &mask_bounds)))
+    {
+        rect.left = max(rect.left, mask_bounds.left);
+        rect.top = max(rect.top, mask_bounds.top);
+        rect.right = min(rect.right, mask_bounds.right);
+        rect.bottom = min(rect.bottom, mask_bounds.bottom);
+    }
+    /* Infinite bounds (the default) would turn into NaNs when transformed. */
+    rect.left = max(rect.left, -limit);
+    rect.top = max(rect.top, -limit);
+    rect.right = min(rect.right, limit);
+    rect.bottom = min(rect.bottom, limit);
+
+    d2d_device_context_push_clip_rect(context, &rect);
 }
 
 static void STDMETHODCALLTYPE d2d_device_context_PopAxisAlignedClip(ID2D1DeviceContext6 *iface)
@@ -2798,10 +2837,13 @@ static void STDMETHODCALLTYPE d2d_device_context_ID2D1DeviceContext_PushLayer(ID
 {
     struct d2d_device_context *context = impl_from_ID2D1DeviceContext(iface);
 
-    FIXME("iface %p, layer_parameters %p, layer %p stub!\n", iface, layer_parameters, layer);
+    FIXME("iface %p, layer_parameters %p, layer %p semi-stub!\n", iface, layer_parameters, layer);
 
     if (context->target.type == D2D_TARGET_COMMAND_LIST)
         d2d_command_list_push_layer(context->target.command_list, context, layer_parameters);
+
+    d2d_device_context_push_layer_clip(context, &layer_parameters->contentBounds,
+            layer_parameters->geometricMask, &layer_parameters->maskTransform);
 }
 
 static HRESULT STDMETHODCALLTYPE d2d_device_context_InvalidateEffectInputRectangle(ID2D1DeviceContext6 *iface,
