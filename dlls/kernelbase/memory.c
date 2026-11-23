@@ -1389,7 +1389,10 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetPhysicallyInstalledSystemMemory( ULONGLONG *mem
     }
     status.dwLength = sizeof(status);
     GlobalMemoryStatusEx( &status );
-    *memory = status.ullTotalPhys / 1024;
+    /* Windows reports the RAM installed, which is above the usable total the host gives us. That
+     * total also moves a little from boot to boot with the firmware's reservations, and licence
+     * checks fingerprint this value, so round it up to whole 2 GiB like the modules it came from. */
+    *memory = (status.ullTotalPhys / 1024 + (2 << 20) - 1) / (2 << 20) * (2 << 20);
     return TRUE;
 }
 
